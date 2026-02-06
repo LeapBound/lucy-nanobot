@@ -1,10 +1,19 @@
 """LiteLLM provider implementation for multi-provider support."""
 
+import asyncio
 import os
 from typing import Any
 
+import httpx
 import litellm
 from litellm import acompletion
+from loguru import logger
+
+try:
+    from litellm.exceptions import InternalServerError
+except ImportError:  # pragma: no cover
+    class InternalServerError(Exception):  # type: ignore[no-redef]
+        pass
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
@@ -125,12 +134,56 @@ class LiteLLMProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        
+
+        kwargs["timeout"] = 300
+
+        max_retries = 3
+        retry_delays_s = [1, 2, 4]
+
+        def is_retryable_error(err: Exception) -> bool:
+            err_name = err.__class__.__name__
+            if err_name in {
+                "InternalServerError",
+                "APIConnectionError",
+                "APITimeoutError",
+            }:
+                return True
+
+            if isinstance(err, InternalServerError):
+                return True
+
+            return isinstance(
+                err,
+                (
+                    httpx.ConnectError,
+                    httpx.ReadTimeout,
+                    httpx.ConnectTimeout,
+                    httpx.TimeoutException,
+                    TimeoutError,
+                    ConnectionError,
+                ),
+            )
+
         try:
-            response = await acompletion(**kwargs)
-            return self._parse_response(response)
+            for attempt in range(max_retries + 1):
+                try:
+                    response = await acompletion(**kwargs)
+                    return self._parse_response(response)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    should_retry = attempt < max_retries and is_retryable_error(e)
+                    if not should_retry:
+                        raise
+
+                    delay_s = retry_delays_s[attempt]
+                    logger.warning(
+                        "LiteLLM request failed; retrying in "
+                        f"{delay_s}s (attempt {attempt + 1}/{max_retries}): {e}"
+                    )
+                    await asyncio.sleep(delay_s)
         except Exception as e:
-            # Return error as content for graceful handling
+            logger.error(f"Error calling LLM: {e}")
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
