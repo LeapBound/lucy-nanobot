@@ -166,6 +166,49 @@ nanobot agent -m "Hello from my local LLM!"
 > [!TIP]
 > The `apiKey` can be any non-empty string for local servers that don't require authentication.
 
+## 🤖 Claude Agent SDK Provider
+
+You can run nanobot with the Claude Agent SDK provider and custom specialist agents.
+
+**1. Install dependencies**
+
+```bash
+pip install -e .
+```
+
+**2. Add agents config** (`<workspace>/agents.yaml`)
+
+```yaml
+agents:
+  requirement-analyst:
+    description: Analyze and structure requirements
+    prompt: Ask clarifying questions and produce acceptance criteria
+    tools: [Read, Write, Edit]
+    model: sonnet
+```
+
+**3. Configure** (`~/.nanobot/config.json`)
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "provider": "claude-agent",
+      "model": "anthropic/claude-sonnet-4-5"
+    }
+  },
+  "providers": {
+    "claudeAgent": {
+      "apiKey": "sk-ant-...",
+      "permissionMode": "default",
+      "agentsConfigPath": "agents.yaml"
+    }
+  }
+}
+```
+
+`agentsConfigPath` supports JSON (`.json`) and simple YAML (`.yaml`/`.yml`) and is resolved relative to the workspace path when not absolute.
+
 ## 💬 Chat Apps
 
 Talk to your nanobot through Telegram, WhatsApp, or Feishu — anytime, anywhere.

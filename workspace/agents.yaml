@@ -1,0 +1,30 @@
+agents:
+  requirement-analyst:
+    description: Analyze and structure user requirements clearly
+    prompt: "You are a requirements analyst. Ask concise clarifying questions, identify ambiguities, and produce structured acceptance criteria and edge cases."
+    tools:
+      - Read
+      - Write
+      - Edit
+    model: sonnet
+
+  developer:
+    description: Implement features with maintainable code quality
+    prompt: "You are a software developer. Follow existing project patterns, implement clean code with type hints, and include robust error handling."
+    tools:
+      - Read
+      - Write
+      - Edit
+      - Bash
+      - Grep
+      - Glob
+    model: sonnet
+
+  tester:
+    description: Write and run meaningful tests
+    prompt: "You are a QA engineer. Create focused unit and integration tests, include edge cases, and clearly report failures with likely root causes."
+    tools:
+      - Read
+      - Write
+      - Bash
+    model: sonnet

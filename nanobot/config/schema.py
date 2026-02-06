@@ -40,6 +40,7 @@ class ChannelsConfig(BaseModel):
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
+    provider: str = "litellm"
     model: str = "anthropic/claude-opus-4-5"
     max_tokens: int = 8192
     temperature: float = 0.7
@@ -57,6 +58,24 @@ class ProviderConfig(BaseModel):
     api_base: str | None = None
 
 
+class ClaudeAgentDefinitionConfig(BaseModel):
+    """Custom Claude Agent definition configuration."""
+
+    description: str
+    prompt: str
+    tools: list[str] = Field(default_factory=list)
+    model: str | None = None
+
+
+class ClaudeAgentProviderConfig(ProviderConfig):
+    """Claude Agent SDK provider configuration."""
+
+    permission_mode: str = "default"
+    allowed_tools: list[str] = Field(default_factory=list)
+    agents_config_path: str | None = None
+    agents: dict[str, ClaudeAgentDefinitionConfig] = Field(default_factory=dict)
+
+
 class ProvidersConfig(BaseModel):
     """Configuration for LLM providers."""
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -67,6 +86,7 @@ class ProvidersConfig(BaseModel):
     zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
     vllm: ProviderConfig = Field(default_factory=ProviderConfig)
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
+    claude_agent: ClaudeAgentProviderConfig = Field(default_factory=ClaudeAgentProviderConfig)
 
 
 class GatewayConfig(BaseModel):
@@ -111,8 +131,26 @@ class Config(BaseSettings):
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
     
-    def get_api_key(self) -> str | None:
-        """Get API key in priority order: OpenRouter > DeepSeek > Anthropic > OpenAI > Gemini > Zhipu > Groq > vLLM."""
+    def get_api_key(self, provider: str | None = None) -> str | None:
+        """
+        Get API key.
+
+        Args:
+            provider: Optional provider selector (`litellm` or `claude-agent`).
+
+        Returns:
+            API key or `None`.
+        """
+        provider_name = (provider or "").strip().lower().replace("_", "-")
+
+        if provider_name == "claude-agent":
+            return (
+                self.providers.claude_agent.api_key
+                or self.providers.anthropic.api_key
+                or None
+            )
+
+        # Default (legacy) behavior and litellm mode
         return (
             self.providers.openrouter.api_key or
             self.providers.deepseek.api_key or
@@ -122,11 +160,26 @@ class Config(BaseSettings):
             self.providers.zhipu.api_key or
             self.providers.groq.api_key or
             self.providers.vllm.api_key or
+            self.providers.claude_agent.api_key or
             None
         )
     
-    def get_api_base(self) -> str | None:
-        """Get API base URL if using OpenRouter, Zhipu or vLLM."""
+    def get_api_base(self, provider: str | None = None) -> str | None:
+        """
+        Get API base URL.
+
+        Args:
+            provider: Optional provider selector (`litellm` or `claude-agent`).
+
+        Returns:
+            API base URL or `None`.
+        """
+        provider_name = (provider or "").strip().lower().replace("_", "-")
+
+        if provider_name == "claude-agent":
+            return self.providers.claude_agent.api_base
+
+        # Default (legacy) behavior and litellm mode
         if self.providers.openrouter.api_key:
             return self.providers.openrouter.api_base or "https://openrouter.ai/api/v1"
         if self.providers.zhipu.api_key:

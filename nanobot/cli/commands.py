@@ -1,7 +1,9 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -16,6 +18,227 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+def _load_agents_config(
+    agents_config_path: str | None,
+    workspace: Path | None = None,
+) -> dict[str, Any]:
+    """Load custom Claude agents configuration from JSON or simple YAML."""
+    if not agents_config_path:
+        return {}
+
+    path = Path(agents_config_path).expanduser()
+    if not path.is_absolute() and workspace is not None:
+        path = (workspace / path).resolve()
+
+    if not path.exists():
+        console.print(f"[yellow]Warning: Agents config not found: {path}[/yellow]")
+        return {}
+
+    raw = path.read_text(encoding="utf-8")
+
+    if path.suffix.lower() == ".json":
+        data = json.loads(raw)
+    elif path.suffix.lower() in {".yaml", ".yml"}:
+        data = _parse_simple_yaml(raw)
+    else:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = _parse_simple_yaml(raw)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Agents config must be an object mapping, got: {type(data)}")
+
+    agents = data.get("agents", data)
+    if not isinstance(agents, dict):
+        raise ValueError("Agents config must contain an 'agents' mapping")
+
+    return agents
+
+
+def _parse_simple_yaml(raw: str) -> dict[str, Any]:
+    """
+    Parse a minimal YAML subset used by workspace/agents.yaml.
+
+    Supported types: mappings, lists, quoted/unquoted scalars.
+    This avoids hard dependency on PyYAML while still supporting the provided example format.
+    """
+    lines = raw.splitlines()
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, Any]] = [(-1, root)]
+
+    for index, line in enumerate(lines):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+
+        while len(stack) > 1 and indent <= stack[-1][0]:
+            stack.pop()
+
+        parent = stack[-1][1]
+
+        if stripped.startswith("- "):
+            if not isinstance(parent, list):
+                raise ValueError("Invalid YAML structure: list item without list context")
+            item_text = stripped[2:].strip()
+            if ":" in item_text:
+                key, value = item_text.split(":", 1)
+                obj: dict[str, Any] = {key.strip(): _yaml_value(value.strip())}
+                parent.append(obj)
+                if value.strip() == "":
+                    next_obj: dict[str, Any] = {}
+                    obj[key.strip()] = next_obj
+                    stack.append((indent, next_obj))
+            else:
+                parent.append(_yaml_value(item_text))
+            continue
+
+        if ":" not in stripped:
+            raise ValueError(f"Invalid YAML line: {stripped}")
+
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if not isinstance(parent, dict):
+            raise ValueError("Invalid YAML structure: mapping key under non-mapping")
+
+        if value == "":
+            next_line_type = _peek_container_type(lines, index)
+            if next_line_type == "list":
+                container: Any = []
+            else:
+                container = {}
+            parent[key] = container
+            stack.append((indent, container))
+        else:
+            parent[key] = _yaml_value(value)
+
+    return root
+
+
+def _peek_container_type(lines: list[str], start_index: int) -> str:
+    """Infer whether the following block starts with a list item."""
+    for future in lines[start_index + 1 :]:
+        stripped = future.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        return "list" if stripped.startswith("- ") else "dict"
+
+    return "dict"
+
+
+def _yaml_value(raw_value: str) -> Any:
+    """Parse simple YAML scalar values."""
+    value = raw_value.strip()
+    if not value:
+        return ""
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    if value.lower() in {"null", "none"}:
+        return None
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [_yaml_value(part.strip()) for part in inner.split(",")]
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        return value[1:-1]
+
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _create_provider(config: Any):
+    """Create provider instance from configuration."""
+    from nanobot.providers.claude_agent_provider import ClaudeAgentProvider
+
+    provider_name = str(config.agents.defaults.provider).strip().lower().replace("_", "-")
+
+    if provider_name == "claude-agent":
+        claude_cfg = config.providers.claude_agent
+        api_key = config.get_api_key("claude-agent")
+        api_base = config.get_api_base("claude-agent")
+        model = config.agents.defaults.model
+
+        agents: dict[str, Any] = {}
+        if claude_cfg.agents:
+            agents.update(
+                {
+                    name: agent.model_dump(exclude_none=True)
+                    for name, agent in claude_cfg.agents.items()
+                }
+            )
+
+        if claude_cfg.agents_config_path:
+            try:
+                loaded_agents = _load_agents_config(
+                    claude_cfg.agents_config_path,
+                    workspace=config.workspace_path,
+                )
+            except Exception as exc:
+                console.print(
+                    f"[red]Error loading agents config '{claude_cfg.agents_config_path}':[/red] {exc}"
+                )
+                raise typer.Exit(1)
+
+            agents.update(loaded_agents)
+
+        try:
+            return ClaudeAgentProvider(
+                api_key=api_key,
+                api_base=api_base,
+                default_model=model,
+                agents=agents or None,
+                permission_mode=claude_cfg.permission_mode,
+                allowed_tools=claude_cfg.allowed_tools,
+                cwd=str(config.workspace_path),
+            )
+        except Exception as exc:
+            console.print(f"[red]Error initializing claude-agent provider:[/red] {exc}")
+            raise typer.Exit(1)
+
+    if provider_name not in {"", "litellm"}:
+        console.print(f"[red]Error: Unsupported provider '{provider_name}'.[/red]")
+        console.print("Supported providers: litellm, claude-agent")
+        raise typer.Exit(1)
+
+    # Default provider remains LiteLLM for backward compatibility
+    try:
+        from nanobot.providers.litellm_provider import LiteLLMProvider
+    except Exception as exc:
+        console.print(f"[red]Error loading litellm provider:[/red] {exc}")
+        console.print("Install dependencies with: pip install -e .")
+        raise typer.Exit(1)
+
+    api_key = config.get_api_key("litellm")
+    api_base = config.get_api_base("litellm")
+    model = config.agents.defaults.model
+    is_bedrock = model.startswith("bedrock/")
+
+    if not api_key and not is_bedrock:
+        console.print("[red]Error: No API key configured.[/red]")
+        console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
+        raise typer.Exit(1)
+
+    return LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=model,
+    )
 
 
 def version_callback(value: bool):
@@ -160,7 +383,6 @@ def gateway(
     """Start the nanobot gateway."""
     from nanobot.config.loader import load_config, get_data_dir
     from nanobot.bus.queue import MessageBus
-    from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.agent.loop import AgentLoop
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
@@ -178,22 +400,8 @@ def gateway(
     # Create components
     bus = MessageBus()
     
-    # Create provider (supports OpenRouter, Anthropic, OpenAI, Bedrock)
-    api_key = config.get_api_key()
-    api_base = config.get_api_base()
-    model = config.agents.defaults.model
-    is_bedrock = model.startswith("bedrock/")
-
-    if not api_key and not is_bedrock:
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
-        raise typer.Exit(1)
-    
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    # Create provider based on config
+    provider = _create_provider(config)
     
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
@@ -289,26 +497,12 @@ def agent(
     """Interact with the agent directly."""
     from nanobot.config.loader import load_config
     from nanobot.bus.queue import MessageBus
-    from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.agent.loop import AgentLoop
     
     config = load_config()
     
-    api_key = config.get_api_key()
-    api_base = config.get_api_base()
-    model = config.agents.defaults.model
-    is_bedrock = model.startswith("bedrock/")
-
-    if not api_key and not is_bedrock:
-        console.print("[red]Error: No API key configured.[/red]")
-        raise typer.Exit(1)
-
     bus = MessageBus()
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    provider = _create_provider(config)
     
     agent_loop = AgentLoop(
         bus=bus,
@@ -640,6 +834,7 @@ def status():
 
     if config_path.exists():
         console.print(f"Model: {config.agents.defaults.model}")
+        console.print(f"Provider: {config.agents.defaults.provider}")
         
         # Check API keys
         has_openrouter = bool(config.providers.openrouter.api_key)
@@ -647,6 +842,9 @@ def status():
         has_openai = bool(config.providers.openai.api_key)
         has_gemini = bool(config.providers.gemini.api_key)
         has_vllm = bool(config.providers.vllm.api_base)
+        has_claude_agent = bool(
+            config.providers.claude_agent.api_key or config.providers.anthropic.api_key
+        )
         
         console.print(f"OpenRouter API: {'[green]✓[/green]' if has_openrouter else '[dim]not set[/dim]'}")
         console.print(f"Anthropic API: {'[green]✓[/green]' if has_anthropic else '[dim]not set[/dim]'}")
@@ -654,6 +852,9 @@ def status():
         console.print(f"Gemini API: {'[green]✓[/green]' if has_gemini else '[dim]not set[/dim]'}")
         vllm_status = f"[green]✓ {config.providers.vllm.api_base}[/green]" if has_vllm else "[dim]not set[/dim]"
         console.print(f"vLLM/Local: {vllm_status}")
+        console.print(
+            f"Claude Agent SDK API: {'[green]✓[/green]' if has_claude_agent else '[dim]not set[/dim]'}"
+        )
 
 
 if __name__ == "__main__":
