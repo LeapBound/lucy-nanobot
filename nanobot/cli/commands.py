@@ -1,6 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import os
 from pathlib import Path
 
 import typer
@@ -16,6 +17,83 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+def _init_provider(config):
+    """Initialize provider based on model prefix.
+
+    Model prefixes supported:
+    - ``claude-code/`` -> :class:`~nanobot.providers.claude_code_provider.ClaudeCodeProvider`
+    - ``codex/`` -> :class:`~nanobot.providers.codex_provider.CodexProvider`
+    - otherwise -> :class:`~nanobot.providers.litellm_provider.LiteLLMProvider`
+
+    Returns:
+        Tuple of (provider, normalized_model)
+    """
+
+    model = config.agents.defaults.model
+
+    if model.startswith("claude-code/"):
+        from nanobot.providers.claude_code_provider import ClaudeCodeProvider
+
+        normalized_model = model.removeprefix("claude-code/") or "sonnet"
+        api_key = config.providers.anthropic.api_key or None
+        api_base = config.providers.anthropic.api_base
+
+        if not api_key and not os.environ.get("ANTHROPIC_API_KEY"):
+            console.print("[red]Error: No Anthropic API key configured.[/red]")
+            console.print("Set one in ~/.nanobot/config.json under providers.anthropic.apiKey")
+            raise typer.Exit(1)
+
+        return (
+            ClaudeCodeProvider(
+                api_key=api_key,
+                api_base=api_base,
+                default_model=normalized_model,
+            ),
+            normalized_model,
+        )
+
+    if model.startswith("codex/"):
+        from nanobot.providers.codex_provider import CodexProvider
+
+        normalized_model = model.removeprefix("codex/") or "o3"
+        api_key = config.providers.openai.api_key or None
+        api_base = config.providers.openai.api_base
+
+        if not api_key and not os.environ.get("OPENAI_API_KEY"):
+            console.print("[red]Error: No OpenAI API key configured.[/red]")
+            console.print("Set one in ~/.nanobot/config.json under providers.openai.apiKey")
+            raise typer.Exit(1)
+
+        return (
+            CodexProvider(
+                api_key=api_key,
+                api_base=api_base,
+                default_model=normalized_model,
+            ),
+            normalized_model,
+        )
+
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    is_bedrock = model.startswith("bedrock/")
+
+    if not api_key and not is_bedrock:
+        console.print("[red]Error: No API key configured.[/red]")
+        console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
+        raise typer.Exit(1)
+
+    return (
+        LiteLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=model,
+        ),
+        model,
+    )
 
 
 def version_callback(value: bool):
@@ -160,7 +238,6 @@ def gateway(
     """Start the nanobot gateway."""
     from nanobot.config.loader import load_config, get_data_dir
     from nanobot.bus.queue import MessageBus
-    from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.agent.loop import AgentLoop
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
@@ -179,21 +256,7 @@ def gateway(
     bus = MessageBus()
     
     # Create provider (supports OpenRouter, Anthropic, OpenAI, Bedrock)
-    api_key = config.get_api_key()
-    api_base = config.get_api_base()
-    model = config.agents.defaults.model
-    is_bedrock = model.startswith("bedrock/")
-
-    if not api_key and not is_bedrock:
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
-        raise typer.Exit(1)
-    
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    provider, normalized_model = _init_provider(config)
     
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
@@ -204,7 +267,7 @@ def gateway(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
-        model=config.agents.defaults.model,
+        model=normalized_model,
         max_iterations=config.agents.defaults.max_tool_iterations,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
@@ -289,31 +352,18 @@ def agent(
     """Interact with the agent directly."""
     from nanobot.config.loader import load_config
     from nanobot.bus.queue import MessageBus
-    from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.agent.loop import AgentLoop
     
     config = load_config()
     
-    api_key = config.get_api_key()
-    api_base = config.get_api_base()
-    model = config.agents.defaults.model
-    is_bedrock = model.startswith("bedrock/")
-
-    if not api_key and not is_bedrock:
-        console.print("[red]Error: No API key configured.[/red]")
-        raise typer.Exit(1)
-
     bus = MessageBus()
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    provider, normalized_model = _init_provider(config)
     
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
+        model=normalized_model,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
     )

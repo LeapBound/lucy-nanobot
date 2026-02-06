@@ -41,11 +41,22 @@ class LiteLLMProvider(LLMProvider):
             (api_base and "openrouter" in api_base)
         )
 
+        default_model_lower = default_model.lower()
+
         # Detect Anthropic direct usage (incl. proxied Anthropic endpoints)
-        self.is_anthropic = "anthropic" in default_model
+        self.is_anthropic = "anthropic" in default_model_lower
+
+        # Detect OpenAI direct usage (incl. OpenAI-branded model ids)
+        # Examples: "openai/gpt-4o", "gpt-4.1"
+        self.is_openai = "openai" in default_model_lower or "gpt" in default_model_lower
 
         # Track if using custom endpoint (vLLM, etc.)
-        self.is_vllm = bool(api_base) and not self.is_openrouter and not self.is_anthropic
+        self.is_vllm = (
+            bool(api_base)
+            and not self.is_openrouter
+            and not self.is_anthropic
+            and not self.is_openai
+        )
         
         # Configure LiteLLM based on provider
         if api_key:
@@ -55,13 +66,14 @@ class LiteLLMProvider(LLMProvider):
             elif self.is_anthropic:
                 # Anthropic direct (optionally via proxy)
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
+            elif self.is_openai:
+                # OpenAI direct (optionally via proxy)
+                os.environ.setdefault("OPENAI_API_KEY", api_key)
             elif self.is_vllm:
                 # vLLM/custom endpoint - uses OpenAI-compatible API
                 os.environ["OPENAI_API_KEY"] = api_key
             elif "deepseek" in default_model:
                 os.environ.setdefault("DEEPSEEK_API_KEY", api_key)
-            elif "openai" in default_model or "gpt" in default_model:
-                os.environ.setdefault("OPENAI_API_KEY", api_key)
             elif "gemini" in default_model.lower():
                 os.environ.setdefault("GEMINI_API_KEY", api_key)
             elif "zhipu" in default_model or "glm" in default_model or "zai" in default_model:
