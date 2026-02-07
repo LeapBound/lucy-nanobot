@@ -1,3 +1,40 @@
+# -----------------------------------------------------------------------------
+# OpenCode runner image (build target: opencode)
+# -----------------------------------------------------------------------------
+#
+# Build example:
+#   docker build --target opencode -t nanobot-opencode .
+#
+# Run example:
+#   docker run --rm -v $PWD:/workspace -w /workspace nanobot-opencode \
+#     opencode run --agent plan --format json "<prompt>"
+
+FROM node:20-slim AS opencode
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        openssh-client \
+        python3 \
+        python3-pip \
+        python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install OpenCode CLI.
+RUN npm install -g opencode-ai \
+    && npm cache clean --force
+
+WORKDIR /workspace
+
+
+# -----------------------------------------------------------------------------
+# nanobot main image (default)
+# -----------------------------------------------------------------------------
+
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 # Install Node.js 20 for the WhatsApp bridge

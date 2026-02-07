@@ -25,6 +25,7 @@ def _init_provider(config):
     Model prefixes supported:
     - ``claude-code/`` -> :class:`~nanobot.providers.claude_code_provider.ClaudeCodeProvider`
     - ``codex/`` -> :class:`~nanobot.providers.codex_provider.CodexProvider`
+    - ``opencode/`` -> :class:`~nanobot.providers.opencode_provider.OpenCodeProvider`
     - otherwise -> :class:`~nanobot.providers.litellm_provider.LiteLLMProvider`
 
     Returns:
@@ -71,6 +72,21 @@ def _init_provider(config):
                 api_key=api_key,
                 api_base=api_base,
                 default_model=normalized_model,
+            ),
+            normalized_model,
+        )
+
+    if model.startswith("opencode/"):
+        from nanobot.providers.opencode_provider import OpenCodeProvider
+
+        normalized_model = model.removeprefix("opencode/") or "plan-build"
+
+        return (
+            OpenCodeProvider(
+                default_model=normalized_model,
+                use_docker=config.opencode.use_docker,
+                docker_image=config.opencode.docker_image,
+                workspace=config.workspace_path,
             ),
             normalized_model,
         )

@@ -4,6 +4,7 @@ from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.claude_code_provider import ClaudeCodeProvider
 from nanobot.providers.codex_provider import CodexProvider
+from nanobot.providers.opencode_provider import OpenCodeProvider
 
 __all__ = [
     "LLMProvider",
@@ -11,4 +12,5 @@ __all__ = [
     "LiteLLMProvider",
     "ClaudeCodeProvider",
     "CodexProvider",
+    "OpenCodeProvider",
 ]

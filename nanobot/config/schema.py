@@ -108,6 +108,13 @@ class ToolsConfig(BaseModel):
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
 
 
+class OpenCodeConfig(BaseModel):
+    """OpenCode provider configuration."""
+
+    use_docker: bool = True
+    docker_image: str = "nanobot-opencode"
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -115,6 +122,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    opencode: OpenCodeConfig = Field(default_factory=OpenCodeConfig)
     
     @property
     def workspace_path(self) -> Path:
